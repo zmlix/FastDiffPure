@@ -1,0 +1,13 @@
+cifar10/*/__*
+cifar10/__*
+cifar10/CIFAR10
+cifar10/models
+cifar10/*.pt
+cifar10/*.png
+cifar10/*.out
+
+imagenet/__*
+imagenet/*/__*
+imagenet/*.png
+imagenet/*.pt
+imagenet/*.out
