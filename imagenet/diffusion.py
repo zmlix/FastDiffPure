@@ -1,20 +1,15 @@
 import torch
 import torch.nn as nn
-import torchvision
-import foolbox as fb
 from torchvision.utils import save_image
 import os
-from torchvision.transforms import ToTensor, Compose
-
 
 from guided_diffusion.script_util import (
-    NUM_CLASSES,
     model_and_diffusion_defaults,
     create_model_and_diffusion,
     args_to_dict,
 )
 
-device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
+# device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
 
 class Args:
     image_size=256
@@ -50,39 +45,40 @@ class Args:
 
 
 class DiffusionRobustModel(nn.Module):
-    def __init__(self):
+    def __init__(self,device):
         super().__init__()
+        self.device = device
         model, diffusion = create_model_and_diffusion(
             **args_to_dict(Args(), model_and_diffusion_defaults().keys())
         )
         model.load_state_dict(
-            torch.load("256x256_diffusion_uncond.pt", map_location=torch.device(device))
+            torch.load("256x256_diffusion_uncond.pt", map_location=torch.device(self.device))
         )
-        model.eval().to(device)
+        model.eval().to(self.device)
 
         self.model = model 
         self.diffusion = diffusion
 
-    def denoise(self, x_start, t, x_mae, multistep = False, **kwags):
+    def denoise(self, x_start, t, x_mae, multistep = False, s=None, **kwags):
         if x_mae is None:
             return self.denoise2(x_start, t, x_mae, multistep=multistep)
         # print(t)
-        t_batch = torch.tensor([t] * len(x_start)).to(device)
+        t_batch = torch.tensor([t] * len(x_start)).to(self.device)
         noise = torch.randn_like(x_start)
         x_t_start = self.diffusion.q_sample(x_start=x_start, t=t_batch, noise=noise)
         x_mae_start = self.diffusion.q_sample(x_start=x_mae, t=t_batch, noise=noise)
-        x_t_start_ = x_t_start.clone().detach().requires_grad_(True)
-        # x_t_start_.requires_grad=True
+        # x_t_start_ = x_t_start.clone().detach().requires_grad_(True)
+        x_t_start.requires_grad=True
 
         # loss = 1 - ssim(x_t_start, x_mae_start, data_range=1, size_average=False)
         mse_loss = nn.MSELoss(reduction='none')
-        loss = mse_loss(x_t_start_, x_mae_start)
+        loss = mse_loss(x_t_start, x_mae_start)
 
         loss.backward(torch.ones_like(loss))
-        grad = x_t_start_.grad
+        grad = x_t_start.grad
         # print(grad.shape)
         # 25000
-        s = 100000 * torch.rand_like(x_t_start) * self.diffusion.get_sqrt_one_minus_alphas_cumprod(x_start, t_batch) / self.diffusion.get_sqrt_alphas_cumprod(x_start, t_batch)
+        S = s * torch.rand_like(x_t_start) * self.diffusion.get_sqrt_one_minus_alphas_cumprod(x_start, t_batch) / self.diffusion.get_sqrt_alphas_cumprod(x_start, t_batch)
         # print("s", s.max(), s.min())
         out = self.diffusion.p_mean_variance(
             self.model,
@@ -96,7 +92,7 @@ class DiffusionRobustModel(nn.Module):
         sqrt_var = torch.exp(0.5 * out["log_variance"])
         # noise = torch.randn_like(x_start)
 
-        sample = (out["mean"] - s*var*grad) + sqrt_var * noise
+        sample = (out["mean"] - S*var*grad) + sqrt_var * noise
         # print((s*var*grad).mean(), out["mean"].mean())
         # sample = out["mean"] + sqrt_var * noise
 
@@ -111,7 +107,7 @@ class DiffusionRobustModel(nn.Module):
         return sample
 
     def denoise2(self, x_start, t, delta = None, multistep=False):
-        t_batch = torch.tensor([t] * len(x_start)).to(device)
+        t_batch = torch.tensor([t] * len(x_start)).to(self.device)
 
         noise = torch.randn_like(x_start)
 
@@ -126,7 +122,7 @@ class DiffusionRobustModel(nn.Module):
                 out = x_t_start
                 for i in range(t)[::-1]:
                     print(i)
-                    t_batch = torch.tensor([i] * len(x_start)).to(device)
+                    t_batch = torch.tensor([i] * len(x_start)).to(self.device)
                     out = self.diffusion.p_sample(
                         self.model,
                         out,

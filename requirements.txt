@@ -1,7 +1,13 @@
-git+https://github.com/RobustBench/robustbench.git
 torch
 torchvision
 foolbox
 timm
 tqdm
 einops
+torchdiffeq
+geotorch
+requests
+numpy
+Jinja2
+pandas
+git+https://github.com/RobustBench/robustbench.git

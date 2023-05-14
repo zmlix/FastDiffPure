@@ -11,3 +11,6 @@ imagenet/*/__*
 imagenet/*.png
 imagenet/*.pt
 imagenet/*.out
+
+/venv
+/apex
