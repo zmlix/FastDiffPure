@@ -1,4 +1,5 @@
 from enum import Enum
+import argparse
 import os
 import torch
 import torchvision
@@ -8,14 +9,20 @@ from tqdm import tqdm
 import foolbox as fb
 from autoattack import AutoAttack
 from robustbench.utils import load_model
-from diffusion import DiffusionRobustModel
+from diffusion import DiffusionPurificationModel
 from bpda_eot_attack import BPDA_EOT_Attack
+import torch.distributed as dist
+# import apex
 
-device = 'cuda:1' if torch.cuda.is_available() else 'cpu'
+os.environ['LOCAL_RANK'] = "0,1,2,3"
+os.environ['OMP_NUM_THREADS'] = "8"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
+
+args = None
+device = 'cuda'
 NROW = 16
 
 class AttackMode(Enum):
-    # PrecessorBlind = "PrecessorBlind"
     Plain = "plain"
     AutoAttack = "AutoAttack"
     PGDAttack = "PGDAttack"
@@ -23,10 +30,10 @@ class AttackMode(Enum):
 
 
 class DModel(torch.nn.Module):
-    def __init__(self, base_model, pure_model, T1, T2):
+    def __init__(self, base_model, pure_model, T, s):
         super().__init__()
-        self.T1 = T1
-        self.T2 = T2
+        self.T = T
+        self.s = s
         self.base_model = base_model
         self.pure_model = pure_model
 
@@ -38,8 +45,7 @@ class DModel(torch.nn.Module):
 
         if mode == "purify":
             imgs = Normalize(0.5, 0.5)(imgs)  # [0,1] -> [-1,1]
-            p_imgs = diffusion_step(self.pure_model, imgs, self.T1, None)
-            p_imgs = diffusion_step(self.pure_model, imgs, self.T2, p_imgs, multistep=False)
+            p_imgs = diffusion_step(self.pure_model, imgs, self.T, self.s)
             p_imgs = torch.clip((p_imgs + 1) / 2, 0, 1)
             return p_imgs
 
@@ -48,27 +54,21 @@ class DModel(torch.nn.Module):
 
         if mode == "purify_and_classify":
             imgs = Normalize(0.5, 0.5)(imgs)  # [0,1] -> [-1,1]
-            # imgs = imgs * 2 - 1
-            p_imgs = diffusion_step(self.pure_model, imgs, self.T1, None)
-            p_imgs = diffusion_step(self.pure_model, imgs, self.T2, p_imgs, multistep=False)
+            p_imgs = diffusion_step(self.pure_model, imgs, self.T, self.s)
             p_imgs = torch.clip((p_imgs + 1) / 2, 0, 1)
             return self.base_model(p_imgs)
 
 def get_model(isFoolbox=True):
     model = load_model(model_name='Standard', dataset='cifar10', threat_model='Linf')
-    model.eval()  # 验证模型
-    # preprocessing = dict(mean=[0.4914, 0.4822, 0.4465],
-    #                      std=[0.2023, 0.1994, 0.2010],
-    #                      axis=-3)
+    model.eval()
     bounds = (0, 1)
 
     if isFoolbox:
-        return fb.PyTorchModel(model, bounds=bounds,device=device) # preprocessing=preprocessing
-    else:
-        return model
+        model = fb.PyTorchModel(model, bounds=bounds,device=device)
+    return model
 
 def PGDAttack_model(fmodel, imgs, labels, bs=128):
-    attack = fb.attacks.LinfPGD(abs_stepsize=1 / 255.0, steps=8)
+    attack = fb.attacks.LinfPGD(rel_stepsize=0.25, steps=10)
     # attack = fb.attacks.L2PGD()
     save_image(imgs, os.path.join('./', 'raw_cifar10.png'), nrow=NROW)
     # print("true labels", labels)
@@ -98,40 +98,33 @@ def BPDAEOT_model(adversary, imgs, labels, bs=128):
     save_image(ims_adv_batch, os.path.join('./', 'bpda_adv_cifar10.png'), nrow=NROW)
     return ims_adv_batch
 
-def diffusion_step(diffusion_model, imgs, t, delta, multistep=False):
+def diffusion_step(diffusion_model, imgs, t, s=None):
     # input [-1,1] output [-1,1]
-    diffusion_imgs = diffusion_model.denoise(imgs, t, delta, multistep=multistep)
-    # 扩散后的图
-    save_image((diffusion_imgs + 1) / 2,
-               os.path.join('./', 'diff_cifar10.png'),
-               nrow=NROW)
+    diffusion_imgs = diffusion_model.denoise(imgs, t, s)
+    
+    if s is None:
+        save_image((diffusion_imgs + 1) / 2,
+                os.path.join('./', 'diff_cifar10.png'),
+                nrow=NROW)
+    else:
+        save_image((diffusion_imgs + 1) / 2,
+                os.path.join('./', 'diff_cifar10_guided.png'),
+                nrow=NROW)
     return diffusion_imgs
 
-
-def pure(diffusion_model, adv_imgs):
-    out_imgs = diffusion_step(diffusion_model, adv_imgs, 300, None)
-    # out_imgs = mae_step(mae, out_imgs)
-    out_imgs = diffusion_step(diffusion_model, adv_imgs, 300, out_imgs, multistep=False)
-    return out_imgs
-
-
-def attack(dataloader, batch_size, attack_mode: AttackMode, T1=350, T2=350):
-    print(f"{attack_mode.value} attack")
-    
+def attack(dataloader, batch_size, attack_mode: AttackMode, T, s):
+    print(f"{attack_mode.value} attack, T = {T}, s = {s}")
     model = get_model(isFoolbox=True)
-    diffusion_model = DiffusionRobustModel()
-
+    diffusion_model = DiffusionPurificationModel(device=device)
+    dmodel = DModel(model, diffusion_model, T, s)
+    # dmodel = apex.amp.initialize(dmodel, opt_level="O1")
+    torch.nn.parallel.DistributedDataParallel(dmodel, device_ids=[args.local_rank])
+    print("model done!")
     if attack_mode == AttackMode.BPDA_EOT:
-        dmodel = DModel(model, diffusion_model, T1 ,T2)
-        adversary = BPDA_EOT_Attack(dmodel, adv_steps=40)
+        adversary = BPDA_EOT_Attack(dmodel, adv_steps=100)
         attack_model = BPDAEOT_model
 
-
     if attack_mode == AttackMode.AutoAttack:
-        # L2 0.5 0.6839801126451635
-        # adversary = AutoAttack(fmodel, norm='L2', eps=0.5, version='standard', device=device)
-        # Linf 10/255 0.4139303578369653
-        # Linf 8/255 0.49194030975227926
         adversary = AutoAttack(model,
                             norm='Linf',
                             eps=8 / 255,
@@ -150,25 +143,17 @@ def attack(dataloader, batch_size, attack_mode: AttackMode, T1=350, T2=350):
         for idx, (imgs, labels) in enumerate(tqdmDataLoader):
 
             N = idx + 1
-            # imgs = torch.stack([val_dataset[i][0] for i in range(N)]).to(device)
-            # labels = torch.tensor([val_dataset[i][1] for i in range(N)]).to(device)
             imgs = torch.clip(imgs, 0, 1)
             imgs = imgs.to(device)
             labels = labels.to(device)
+            save_image(imgs, os.path.join('./', 'clean_imgs.png'), nrow=NROW)
             if attack_mode == AttackMode.Plain:
                 adv_imgs = imgs
             else:
                 adv_imgs = attack_model(adversary, imgs, labels, batch_size)
-            adv_imgs = Normalize(0.5, 0.5)(adv_imgs)  # [0,1] -> [-1,1]
 
-            # out_imgs = adv_imgs
-            # out_imgs = pure(diffusion_model, adv_imgs)
-            out_imgs = diffusion_step(diffusion_model, adv_imgs, T1, None)
-            out_imgs = diffusion_step(diffusion_model, adv_imgs, T2, out_imgs, multistep=False)
-            # out_imgs = mae_step(mae, out_imgs)
-
-            accuracy = fb.utils.accuracy(model,
-                                        torch.clip((out_imgs + 1) / 2, 0, 1),
+            accuracy = fb.utils.accuracy(dmodel,
+                                        torch.clip(adv_imgs, 0, 1),
                                         labels)
 
             avg_accuracy += accuracy
@@ -176,38 +161,53 @@ def attack(dataloader, batch_size, attack_mode: AttackMode, T1=350, T2=350):
             tqdmDataLoader.set_postfix(ordered_dict={
                 "epoch": idx,
                 "accuracy": accuracy,
+                "local_rank": args.local_rank,
                 "avg": avg_accuracy/N
             })
-            # break
 
     print(avg_accuracy / N)
 
 
-def main(T1,T2):
-    load_batch_size = 2
+def main(load_batch_size, attack_mode: AttackMode, T, s):
 
-    # train_dataset = torchvision.datasets.CIFAR10('CIFAR10', train=True, download=True, transform=Compose([ToTensor()]))
     val_dataset = torchvision.datasets.CIFAR10('CIFAR10',
                                                train=False,
                                                download=True,
                                                transform=Compose([ToTensor()]))
+                                               
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
+
     dataloader = torch.utils.data.DataLoader(val_dataset,
                                              load_batch_size,
+                                             sampler=val_sampler,
                                              shuffle=False,
                                              num_workers=4)
 
-    attack(dataloader, load_batch_size, AttackMode.BPDA_EOT, T1=T1, T2=T2)
-    # attack(dataloader, 'black')
-
-    # mae = get_mae()
-
+    attack(dataloader, load_batch_size, attack_mode, T, s)
 
 if __name__ == "__main__":
-    # for t1 in [0,100,200,300,400,500,600,700,800]:
-    #     for t2 in [0,100,200,300,400,500,600,700,800]:
-    #         print(f"t1={t1}, t2={t2}")
-    #         main(t1,t2)
 
-    main(350,350)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, default="plain")
+    parser.add_argument('--T', type=int, default=350)
+    parser.add_argument('--scale', type=float, default=100000)
+    parser.add_argument('--bs', type=int, default=64)
+    parser.add_argument('--local-rank', default=-1, type=int,
+                    help='node rank for distributed training')
+    args = parser.parse_args()
 
-# mae 可作为去噪器 -> 可认证防御 -> 随机平滑 -> 去噪平滑 -> mae平滑
+    dist.init_process_group(backend='nccl')
+    torch.cuda.set_device(args.local_rank)
+
+    attackMode = AttackMode.Plain
+
+    if args.mode == 'pgd':
+        attackMode = AttackMode.PGDAttack
+    if args.mode == 'bpda':
+        attackMode = AttackMode.BPDA_EOT
+    if args.mode == 'auto':
+        attackMode = AttackMode.AutoAttack
+    
+    main(args.bs ,attackMode, args.T, args.scale)
+
+# python3 -m torch.distributed.launch --nproc_per_node=4 run.py
