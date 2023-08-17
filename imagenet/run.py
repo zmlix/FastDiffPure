@@ -30,13 +30,13 @@ class AttackMode(Enum):
 
 class ImagenetDataset(Dataset):
     def __init__(self):
-        self.size = None
+        self.size = 5000 if args.model == "resnet152" else None
         self.transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Resize((256,256), antialias=True)
+            torchvision.transforms.Resize((224,224), antialias=True)
         ])
         
-        self.dataset = torchvision.datasets.ImageFolder('/home/mlt01/imagenetval/imagenetval',transform=self.transform)
+        self.dataset = torchvision.datasets.ImageFolder('/home/data/imagenetval/imagenetval',transform=self.transform)
         
     def __len__(self):
         return self.size or len(self.dataset)
@@ -89,24 +89,24 @@ def get_model(isFoolbox=True, model_type="resnet152"):
     return model
 
 def PGDAttack_model(fmodel, imgs, labels, bs=128):
-    attack = fb.attacks.LinfPGD(rel_stepsize=0.25, steps=40)
+    attack = fb.attacks.LinfPGD(rel_stepsize=0.25, steps=100)
     # attack = fb.attacks.L2PGD()
-    save_image(imgs, os.path.join('./', 'raw_cifar10.png'), nrow=NROW)
+    save_image(imgs, os.path.join('./', 'raw_imagenet.png'), nrow=NROW)
     # print("true labels", labels)
     # print("pred labels", fmodel(imgs).softmax(-1).argmax(-1))
     # accuracy = fb.utils.accuracy(fmodel, imgs, labels)
     # print("accuracy", accuracy)
     # criterion = fb.criteria.Misclassification(labels)
-    adv_images, clipped, _ = attack(fmodel, imgs, labels, epsilons=16 / 255)
+    adv_images, clipped, _ = attack(fmodel, imgs, labels, epsilons=4 / 255)
     # print("attk labels:", fmodel(clipped).softmax(-1).argmax(-1))
     # accuracy = fb.utils.accuracy(fmodel, clipped, labels)
     # print("adv_accuracy", accuracy)
-    save_image(clipped, os.path.join('./', 'adv_cifar10.png'), nrow=NROW)
+    save_image(clipped, os.path.join('./', 'adv_imagenet.png'), nrow=NROW)
     return clipped
 
 def autoAttack_model(adversary, imgs, labels, bs=128):
     x_adv = adversary.run_standard_evaluation(imgs, labels, bs=bs)
-    save_image(x_adv, os.path.join('./', 'auto_adv_cifar10.png'), nrow=NROW)
+    save_image(x_adv, os.path.join('./', 'auto_adv_imagenet.png'), nrow=NROW)
     # print(torch.norm(imgs - x_adv, p = 2, dim=(1,2,3)).mean())
     return x_adv
 
@@ -116,7 +116,7 @@ def BPDAEOT_model(adversary, imgs, labels, bs=128):
     robust_acc = float(class_batch[-1, :].sum()) / class_batch.shape[1]
     print('init acc: {:.2%}, robust acc: {:.2%}'.format(init_acc, robust_acc))
     ims_adv_batch = ims_adv_batch.to(device)
-    save_image(ims_adv_batch, os.path.join('./', 'bpda_adv_cifar10.png'), nrow=NROW)
+    save_image(ims_adv_batch, os.path.join('./', 'bpda_adv_imagenet.png'), nrow=NROW)
     return ims_adv_batch
 
 def diffusion_step(diffusion_model, imgs, t, s=None):
@@ -139,10 +139,10 @@ def attack(dataloader, batch_size, attack_mode: AttackMode, T, s):
     diffusion_model = DiffusionPurificationModel(device=device)
     dmodel = DModel(model, diffusion_model, T, s)
     # dmodel = apex.amp.initialize(dmodel, opt_level="O1")
-    torch.nn.parallel.DistributedDataParallel(dmodel, device_ids=[args.local_rank])
+    # torch.nn.parallel.DistributedDataParallel(dmodel, device_ids=[args.local_rank])
     print("model done!")
     if attack_mode == AttackMode.BPDA_EOT:
-        adversary = BPDA_EOT_Attack(dmodel, adv_eps=16/255, adv_steps=40,eot_defense_reps=2, eot_attack_reps=1)
+        adversary = BPDA_EOT_Attack(dmodel, adv_eps=4/255, adv_steps=40,eot_defense_reps=2, eot_attack_reps=1)
         attack_model = BPDAEOT_model
 
     if attack_mode == AttackMode.AutoAttack:
@@ -207,8 +207,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default="plain")
-    parser.add_argument('--T', type=int, default=80)
-    parser.add_argument('--scale', type=float, default=1500)
+    parser.add_argument('--T', type=int, default=100)
+    parser.add_argument('--scale', type=float, default=2000)
     parser.add_argument('--bs', type=int, default=2)
     parser.add_argument('--model', type=str, default='resnet152')
     parser.add_argument('--local-rank', default=-1, type=int,

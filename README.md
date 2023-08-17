@@ -3,6 +3,7 @@
 This repository is the official implementation of Fast and Accurate Adversarial Purification with Twice One-step Denoising
 
 ![sample](./fig1.png)
+![sample](./fig4.png)
 ![algorithm](./FAAP.jpg)
 
 ## Requirements
@@ -39,13 +40,13 @@ You can download pretrained models here:
 To evaluate my model on Cifar10, run:
 
 ```
-python3 -m torch.distributed.launch --nproc_per_node=4 run.py --mode pgd --T 350 --scale 100000
+python3 -m torch.distributed.launch --nproc_per_node=4 run.py --mode pgd --T 400 --scale 50000
 ```
 
 To evaluate my model on ImageNet, run:
 
 ```
-python3 -m torch.distributed.launch --nproc_per_node=4 run.py --mode pgd --T 80 --scale 1500 --model resnet152
+python3 -m torch.distributed.launch --nproc_per_node=4 run.py --mode pgd --T 100 --scale 2000 --model resnet152
 ```
 
 ## Contributing

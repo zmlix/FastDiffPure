@@ -5,12 +5,14 @@ cifar10/models
 cifar10/*.pt
 cifar10/*.png
 cifar10/*.out
+cifar10/*.sh
 
 imagenet/__*
 imagenet/*/__*
 imagenet/*.png
 imagenet/*.pt
 imagenet/*.out
+imagenet/*.sh
 
 /venv
 /apex

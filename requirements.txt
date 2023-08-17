@@ -11,3 +11,4 @@ numpy
 Jinja2
 pandas
 git+https://github.com/RobustBench/robustbench.git
+git+https://github.com/Harry24k/adversarial-attacks-pytorch.git
