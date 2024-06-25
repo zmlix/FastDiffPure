@@ -4,7 +4,9 @@ This repository is the official implementation of Fast and Accurate Adversarial 
 
 ![sample](./fig1.png)
 ![sample](./fig4.png)
-![algorithm](./FAAP.jpg)
+![algorithm](./OSGD.jpg)
+![algorithm](./OSGD_2.jpg)
+![algorithm](./abstract.png)
 
 ## Requirements
 
