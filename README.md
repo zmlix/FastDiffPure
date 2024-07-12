@@ -1,6 +1,6 @@
-# Fast and Accurate Adversarial Purification with Twice One-step Denoising
+# Adversarial Purification with One-Step Guided Diffusion Model
 
-This repository is the official implementation of Fast and Accurate Adversarial Purification with Twice One-step Denoising
+This repository is the official implementation of Adversarial Purification with One-Step Guided Diffusion Model
 
 ![sample](./fig1.png)
 ![sample](./fig4.png)
